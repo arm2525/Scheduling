@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic CPLEX Gantt Chart</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .gantt-row { position: relative; height: 60px; border-bottom: 1px solid #e5e7eb; background-color: #f9fafb; }
+        .gantt-bar {
+            position: absolute;
+            height: 40px;
+            top: 10px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 0.85rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s, box-shadow 0.2s;
+            cursor: pointer;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+            padding: 0 4px;
+        }
+        .gantt-bar:hover { 
+            transform: scale(1.02); 
+            z-index: 20; 
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
+        }
+        
+        .axis-tick { position: absolute; bottom: -25px; transform: translateX(-50%); font-size: 0.75rem; color: #6b7280; }
+        .axis-line { position: absolute; height: 100%; width: 1px; background-color: #e5e7eb; top: 0; z-index: 0; }
+        
+        /* Custom Scrollbar for textarea */
+        textarea::-webkit-scrollbar { width: 8px; }
+        textarea::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
+        textarea::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        textarea::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body class="bg-gray-100 p-4 md:p-8 font-sans min-h-screen">
+
+    <div class="max-w-7xl mx-auto space-y-6">
+        
+        <!-- Header & Input Section -->
+        <div class="bg-white rounded-xl shadow-lg p-6">
+            <h1 class="text-3xl font-bold text-gray-800 mb-2">Dynamic Gantt Chart Generator</h1>
+            <p class="text-gray-500 mb-4">Paste your CPLEX comma-separated output below to generate the chart.</p>
+            
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Paste Data (Job, Machine, Event, Assign, Duration, Quantity, Start, End):</label>
+                <textarea id="csvInput" rows="6" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm" placeholder="J1,M1,E1,1,7.619,30.476,9.523,17.142..."></textarea>
+            </div>
+            
+            <button onclick="generateChart()" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded-lg shadow transition-colors flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M3 3a1 1 0 000 2v8a2 2 0 002 2h2.586l-1.293 1.293a1 1 0 101.414 1.414L10 15.414l2.293 2.293a1 1 0 001.414-1.414L12.414 15H15a2 2 0 002-2V5a1 1 0 100-2H3zm11.707 4.707a1 1 0 00-1.414-1.414L10 9.586 8.707 8.293a1 1 0 00-1.414 0l-2 2a1 1 0 101.414 1.414L8 10.414l1.293 1.293a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+                </svg>
+                Generate Gantt Chart
+            </button>
+        </div>
+
+        <!-- Output Section (Hidden by default until generated) -->
+        <div id="outputSection" class="bg-white rounded-xl shadow-lg p-6 hidden">
+            <div class="flex justify-between items-end mb-6">
+                <div>
+                    <h2 class="text-2xl font-bold text-gray-800">Machine Schedule</h2>
+                    <p class="text-gray-500 mt-1">Makespan (Cmax): <span id="cmaxDisplay" class="font-bold text-blue-600 text-lg">0.00</span> units</p>
+                </div>
+            </div>
+
+            <!-- Legend Container -->
+            <div id="legendContainer" class="flex flex-wrap gap-4 mb-6 bg-gray-50 p-4 rounded-lg border border-gray-200">
+                <!-- Legend items injected here -->
+            </div>
+
+            <!-- Gantt Chart Container -->
+            <div id="ganttContainer" class="relative border border-gray-300 rounded-lg overflow-hidden bg-white">
+                <!-- Chart injected here -->
+            </div>
+        </div>
+        
+    </div>
+
+    <script>
+        // Set default text for demonstration purposes
+        document.getElementById('csvInput').value = `Job,Machine,Event,Assign,Duration,Quantity,Start,End
+J1,M1,E1,1,7.619047619,30.476190476,9.523809524,17.142857143
+J1,M3,E2,1,9.523809524,9.523809524,0,9.523809524
+J2,M1,E1,1,5.678571429,22.714285714,3.845238095,9.523809524
+J2,M2,E2,1,4.142857143,8.285714286,13,17.142857143
+J3,M2,E1,1,13,26,0,13
+J4,M3,E1,1,7.619047619,7.619047619,9.523809524,17.142857143
+J4,M1,E2,1,3.845238095,15.380952381,0,3.845238095`;
+
+        // Generates consistent distinct colors for jobs
+        function getJobColor(jobStr) {
+            // Extract numbers from strings like "J1" to keep colors stable, or hash it
+            let num = parseInt(jobStr.replace(/\D/g, ''));
+            if (isNaN(num)) {
+                num = jobStr.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+            }
+            // Golden ratio coloring for distinct colors
+            const hue = (num * 137.508) % 360;
+            return `hsl(${hue}, 70%, 50%)`;
+        }
+
+        function generateChart() {
+            const csvText = document.getElementById('csvInput').value;
+            const lines = csvText.split('\\n');
+            
+            let tasks = [];
+            let maxTime = 0;
+            let jobsSet = new Set();
+            let machinesSet = new Set();
+
+            // Parse CSV Data
+            lines.forEach(line => {
+                const parts = line.split(',').map(s => s.trim());
+                
+                // Ensure it has enough columns and isn't a header row
+                if (parts.length >= 8) {
+                    const start = parseFloat(parts[6]);
+                    const end = parseFloat(parts[7]);
+                    
+                    // Skip if start/end aren't numbers (e.g., the Header row)
+                    if (isNaN(start) || isNaN(end)) return;
+                    
+                    // Skip if Assign == 0
+                    if (parts[3] === '0') return;
+
+                    const job = parts[0].replace('J', '');
+                    const machine = parts[1].replace('M', '');
+                    const event = parts[2].replace('E', '');
+                    const qty = parseFloat(parts[5]);
+                    
+                    if (end > maxTime) maxTime = end;
+                    
+                    jobsSet.add(job);
+                    machinesSet.add(machine);
+
+                    tasks.push({
+                        job: job,
+                        machine: machine,
+                        event: event,
+                        qty: qty,
+                        start: start,
+                        end: end
+                    });
+                }
+            });
+
+            if (tasks.length === 0) {
+                alert("No valid data found. Please ensure it matches the 8-column format: Job,Machine,Event,Assign,Duration,Quantity,Start,End");
+                return;
+            }
+
+            // Group tasks by machine
+            const machinesObj = {};
+            // Initialize all found machines
+            Array.from(machinesSet).sort((a,b) => a.localeCompare(b, undefined, {numeric: true})).forEach(m => {
+                machinesObj[m] = [];
+            });
+            
+            // Assign tasks to machines
+            tasks.forEach(t => {
+                machinesObj[t.machine].push(t);
+            });
+
+            renderGantt(machinesObj, maxTime, Array.from(jobsSet));
+        }
+
+        function renderGantt(machinesObj, maxTime, jobs) {
+            document.getElementById('outputSection').classList.remove('hidden');
+            document.getElementById('cmaxDisplay').innerText = maxTime.toFixed(3);
+
+            // 1. Build Legend
+            const legendContainer = document.getElementById('legendContainer');
+            legendContainer.innerHTML = '';
+            
+            jobs.sort((a,b) => a.localeCompare(b, undefined, {numeric: true})).forEach(job => {
+                const color = getJobColor(job);
+                legendContainer.innerHTML += \`
+                    <div class="flex items-center">
+                        <div class="w-4 h-4 rounded shadow-sm mr-2" style="background-color: \${color}"></div>
+                        <span class="text-sm font-medium text-gray-700">Job \${job}</span>
+                    </div>
+                \`;
+            });
+
+            // 2. Build Gantt Chart Rows
+            const ganttContainer = document.getElementById('ganttContainer');
+            ganttContainer.innerHTML = ''; // Clear old
+
+            // Add background grid lines (25%, 50%, 75%, 100%)
+            let gridHTML = '<div class="absolute inset-0 pl-24 pointer-events-none">';
+            for(let i=0; i<=4; i++) {
+                gridHTML += \`<div class="axis-line" style="left: \${i*25}%"></div>\`;
+            }
+            gridHTML += '</div>';
+            ganttContainer.innerHTML += gridHTML;
+
+            // Add Machine Rows
+            for (const [machineId, machineTasks] of Object.entries(machinesObj)) {
+                
+                let rowHTML = \`
+                <div class="flex">
+                    <div class="w-24 flex-shrink-0 bg-gray-100 border-r border-gray-300 border-b flex items-center justify-center font-bold text-gray-700 z-10">
+                        M \${machineId}
+                    </div>
+                    <div class="flex-grow gantt-row">
+                \`;
+
+                // Add Tasks as bars
+                machineTasks.forEach(task => {
+                    const leftPercent = (task.start / maxTime) * 100;
+                    const widthPercent = ((task.end - task.start) / maxTime) * 100;
+                    const color = getJobColor(task.job);
+                    
+                    const tooltip = \`Job \${task.job} (Event \${task.event})\\nStart: \${task.start.toFixed(3)}\\nEnd: \${task.end.toFixed(3)}\\nQty: \${task.qty.toFixed(3)}\`;
+
+                    rowHTML += \`
+                        <div class="gantt-bar text-xs shadow-md border border-white/20" 
+                             style="left: \${leftPercent}%; width: \${widthPercent}%; background-color: \${color};" 
+                             title="\${tooltip}">
+                             J\${task.job}
+                        </div>
+                    \`;
+                });
+
+                rowHTML += \`</div></div>\`;
+                ganttContainer.innerHTML += rowHTML;
+            }
+
+            // 3. Build X-Axis
+            let axisHTML = '<div class="relative h-8 pl-24 bg-white border-t border-gray-300">';
+            for(let i=0; i<=4; i++) {
+                const timeValue = (maxTime * (i / 4)).toFixed(2);
+                axisHTML += \`<div class="axis-tick" style="left: \${i*25}%">\${timeValue}</div>\`;
+            }
+            axisHTML += '</div>';
+            ganttContainer.innerHTML += axisHTML;
+        }
+
+        // Generate on first load with the default data
+        window.onload = function() {
+            generateChart();
+        };
+    </script>
+</body>
+</html>
