@@ -28,8 +28,22 @@
         }
         .gantt-bar:hover { 
             transform: scale(1.02); 
-            z-index: 20; 
+            z-index: 30 !important; 
             box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
+        }
+        
+        /* Overlap Visual Indicator */
+        .overlap-bar {
+            border: 3px solid #ef4444 !important; /* Red 500 border */
+            opacity: 0.85;
+            background-image: repeating-linear-gradient(
+                45deg,
+                transparent,
+                transparent 10px,
+                rgba(239, 68, 68, 0.4) 10px,
+                rgba(239, 68, 68, 0.4) 20px
+            );
+            z-index: 20;
         }
         
         .axis-tick { position: absolute; bottom: -25px; transform: translateX(-50%); font-size: 0.75rem; color: #6b7280; }
@@ -73,6 +87,19 @@
                 </div>
             </div>
 
+            <!-- Overlap Warning Container -->
+            <div id="overlapWarningContainer" class="hidden mb-6 bg-red-50 border-l-4 border-red-500 p-4 rounded-md shadow-sm">
+                <div class="flex items-center mb-2">
+                    <svg class="h-6 w-6 text-red-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    <h3 class="text-lg font-bold text-red-800">Overlap Detected!</h3>
+                </div>
+                <ul id="overlapList" class="list-disc list-inside text-sm text-red-700 space-y-1 ml-2">
+                    <!-- Warnings injected here -->
+                </ul>
+            </div>
+
             <!-- Legend Container -->
             <div id="legendContainer" class="flex flex-wrap gap-4 mb-6 bg-gray-50 p-4 rounded-lg border border-gray-200">
                 <!-- Legend items injected here -->
@@ -99,19 +126,16 @@ J4,M1,E2,1,3.845238095,15.380952381,0,3.845238095`;
 
         // Generates consistent distinct colors for jobs
         function getJobColor(jobStr) {
-            // Extract numbers from strings like "J1" to keep colors stable, or hash it
             let num = parseInt(jobStr.replace(/\\D/g, ''));
             if (isNaN(num)) {
                 num = jobStr.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
             }
-            // Golden ratio coloring for distinct colors
             const hue = (num * 137.508) % 360;
             return `hsl(${hue}, 70%, 50%)`;
         }
 
         function generateChart() {
             const csvText = document.getElementById('csvInput').value;
-            // Split by standard newline or windows return newline
             const lines = csvText.trim().split(/\r?\n/);
             
             let tasks = [];
@@ -122,16 +146,11 @@ J4,M1,E2,1,3.845238095,15.380952381,0,3.845238095`;
             // Parse CSV Data
             lines.forEach(line => {
                 const parts = line.split(',').map(s => s.trim());
-                
-                // Ensure it has enough columns and isn't a header row
                 if (parts.length >= 8) {
                     const start = parseFloat(parts[6]);
                     const end = parseFloat(parts[7]);
                     
-                    // Skip if start/end aren't numbers (e.g., the Header row)
                     if (isNaN(start) || isNaN(end)) return;
-                    
-                    // Skip if Assign == 0
                     if (parts[3] === '0') return;
 
                     const job = parts[0].replace('J', '');
@@ -150,7 +169,8 @@ J4,M1,E2,1,3.845238095,15.380952381,0,3.845238095`;
                         event: event,
                         qty: qty,
                         start: start,
-                        end: end
+                        end: end,
+                        hasOverlap: false // default state
                     });
                 }
             });
@@ -160,24 +180,71 @@ J4,M1,E2,1,3.845238095,15.380952381,0,3.845238095`;
                 return;
             }
 
-            // Group tasks by machine
+            // Group tasks by machine for Machine Overlap check
             const machinesObj = {};
-            // Initialize all found machines
             Array.from(machinesSet).sort((a,b) => a.localeCompare(b, undefined, {numeric: true})).forEach(m => {
                 machinesObj[m] = [];
             });
-            
-            // Assign tasks to machines
-            tasks.forEach(t => {
-                machinesObj[t.machine].push(t);
-            });
+            tasks.forEach(t => machinesObj[t.machine].push(t));
 
-            renderGantt(machinesObj, maxTime, Array.from(jobsSet));
+            // Group tasks by job for Job Overlap check
+            const jobsObj = {};
+            Array.from(jobsSet).forEach(j => {
+                jobsObj[j] = [];
+            });
+            tasks.forEach(t => jobsObj[t.job].push(t));
+
+            // Run Overlap Detection
+            let overlapMessages = new Set();
+
+            // 1. Check Machine Overlaps
+            for (const [machineId, machineTasks] of Object.entries(machinesObj)) {
+                for (let i = 0; i < machineTasks.length; i++) {
+                    for (let j = i + 1; j < machineTasks.length; j++) {
+                        let t1 = machineTasks[i];
+                        let t2 = machineTasks[j];
+                        // Overlap condition: start1 < end2 AND start2 < end1
+                        if (t1.start < t2.end && t2.start < t1.end) {
+                            t1.hasOverlap = true;
+                            t2.hasOverlap = true;
+                            overlapMessages.add(`<strong>Machine ${machineId}</strong>: Job ${t1.job} (Event ${t1.event}) overlaps with Job ${t2.job} (Event ${t2.event})`);
+                        }
+                    }
+                }
+            }
+
+            // 2. Check Job Overlaps (Same job doing two things at once)
+            for (const [jobId, jobTasks] of Object.entries(jobsObj)) {
+                for (let i = 0; i < jobTasks.length; i++) {
+                    for (let j = i + 1; j < jobTasks.length; j++) {
+                        let t1 = jobTasks[i];
+                        let t2 = jobTasks[j];
+                        if (t1.start < t2.end && t2.start < t1.end) {
+                            t1.hasOverlap = true;
+                            t2.hasOverlap = true;
+                            overlapMessages.add(`<strong>Job ${jobId} Conflict</strong>: Event ${t1.event} (M${t1.machine}) overlaps with Event ${t2.event} (M${t2.machine})`);
+                        }
+                    }
+                }
+            }
+
+            renderGantt(machinesObj, maxTime, Array.from(jobsSet), Array.from(overlapMessages));
         }
 
-        function renderGantt(machinesObj, maxTime, jobs) {
+        function renderGantt(machinesObj, maxTime, jobs, overlapMessages) {
             document.getElementById('outputSection').classList.remove('hidden');
             document.getElementById('cmaxDisplay').innerText = maxTime.toFixed(3);
+
+            // Handle Overlap UI Warning
+            const warningContainer = document.getElementById('overlapWarningContainer');
+            const overlapList = document.getElementById('overlapList');
+            if (overlapMessages.length > 0) {
+                warningContainer.classList.remove('hidden');
+                overlapList.innerHTML = overlapMessages.map(msg => `<li>${msg}</li>`).join('');
+            } else {
+                warningContainer.classList.add('hidden');
+                overlapList.innerHTML = '';
+            }
 
             // 1. Build Legend
             const legendContainer = document.getElementById('legendContainer');
@@ -195,9 +262,8 @@ J4,M1,E2,1,3.845238095,15.380952381,0,3.845238095`;
 
             // 2. Build Gantt Chart Rows
             const ganttContainer = document.getElementById('ganttContainer');
-            ganttContainer.innerHTML = ''; // Clear old
+            ganttContainer.innerHTML = ''; 
 
-            // Add background grid lines (25%, 50%, 75%, 100%)
             let gridHTML = '<div class="absolute inset-0 pl-24 pointer-events-none">';
             for(let i=0; i<=4; i++) {
                 gridHTML += `<div class="axis-line" style="left: ${i*25}%"></div>`;
@@ -223,9 +289,10 @@ J4,M1,E2,1,3.845238095,15.380952381,0,3.845238095`;
                     const color = getJobColor(task.job);
                     
                     const tooltip = `Job ${task.job} (Event ${task.event})\nStart: ${task.start.toFixed(3)}\nEnd: ${task.end.toFixed(3)}\nQty: ${task.qty.toFixed(3)}`;
+                    const overlapClass = task.hasOverlap ? 'overlap-bar' : '';
 
                     rowHTML += `
-                        <div class="gantt-bar text-xs shadow-md border border-white/20" 
+                        <div class="gantt-bar text-xs shadow-md border border-white/20 ${overlapClass}" 
                              style="left: ${leftPercent}%; width: ${widthPercent}%; background-color: ${color};" 
                              title="${tooltip}">
                              J${task.job}
